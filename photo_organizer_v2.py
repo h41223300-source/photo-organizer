@@ -15,7 +15,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 
-APP = "사진관리 V2.1 - 촬영일 우선 정리"
+APP = "사진관리 V2.2 - 촬영일 정밀판정"
 
 IMAGE_EXT = {
     ".jpg", ".jpeg", ".png", ".gif", ".tif", ".tiff",
@@ -29,10 +29,25 @@ VIDEO_EXT = {
     ".mts", ".m2ts", ".3gp"
 }
 
+# 실제 촬영일로 우선 인정할 태그
+PHOTO_PRIORITY = [
+    "DateTimeOriginal",
+    "DateTimeDigitized",
+    "CreateDate",
+    "DateTime"
+]
 
-# ----------------------------------------------------------
-# PyInstaller 내부 파일 위치
-# ----------------------------------------------------------
+VIDEO_PRIORITY = [
+    "CreationDate",
+    "CreateDate",
+    "MediaCreateDate",
+    "TrackCreateDate"
+]
+
+
+# ---------------------------------------------------------
+# PyInstaller / ExifTool
+# ---------------------------------------------------------
 
 def resource_path(name):
     base = getattr(
@@ -44,25 +59,60 @@ def resource_path(name):
 
 
 def exiftool_path():
-    for name in (
-        "exiftool.exe",
-        "exiftool(-k).exe",
-        "exiftool"
-    ):
-        p = resource_path(name)
+    candidates = [
+        resource_path("exiftool.exe"),
+        resource_path("exiftool(-k).exe")
+    ]
 
+    for p in candidates:
         if os.path.exists(p):
             return p
 
     return shutil.which("exiftool")
 
 
-# ----------------------------------------------------------
+def exiftool_status():
+    tool = exiftool_path()
+
+    if not tool:
+        return False, "", "ExifTool 실행파일을 찾을 수 없습니다."
+
+    try:
+        flags = (
+            subprocess.CREATE_NO_WINDOW
+            if os.name == "nt"
+            else 0
+        )
+
+        r = subprocess.run(
+            [tool, "-ver"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            creationflags=flags
+        )
+
+        if r.returncode == 0 and r.stdout.strip():
+            return True, tool, r.stdout.strip()
+
+        return (
+            False,
+            tool,
+            (r.stderr or r.stdout or "ExifTool 실행 실패").strip()
+        )
+
+    except Exception as e:
+        return False, tool, str(e)
+
+
+# ---------------------------------------------------------
 # 날짜 파싱
-# ----------------------------------------------------------
+# ---------------------------------------------------------
 
 def parse_dt(value):
-    if not value:
+    if value is None:
         return None
 
     s = str(value).strip()
@@ -70,178 +120,252 @@ def parse_dt(value):
     if not s:
         return None
 
-    # ExifTool 형식
     # 2017:06:10 18:32:21
+    # 2017-06-10 18:32:21
     # 2017:06:10 18:32:21+09:00
-    # 2017:06:10 18:32:21.123
-    # 2017-06-10T18:32:21+09:00
-
+    # 2017-06-10T18:32:21
     m = re.search(
+        r"(?<!\d)"
         r"(19\d{2}|20\d{2})"
         r"[:-](0[1-9]|1[0-2])"
         r"[:-]([0-2]\d|3[01])"
         r"(?:[ T]"
         r"([0-2]\d)"
-        r"[:]?([0-5]\d)"
-        r"[:]?([0-5]\d))?",
+        r"[:.]?([0-5]\d)"
+        r"[:.]?([0-5]\d))?",
         s
     )
 
-    if not m:
-        # YYYYMMDD
-        m = re.search(
-            r"(?<!\d)"
-            r"(19\d{2}|20\d{2})"
-            r"(0[1-9]|1[0-2])"
-            r"([0-2]\d|3[01])"
-            r"(?!\d)",
-            s
-        )
+    if m:
+        try:
+            y = int(m.group(1))
+            mo = int(m.group(2))
+            d = int(m.group(3))
+            h = int(m.group(4) or 0)
+            mi = int(m.group(5) or 0)
+            sec = int(m.group(6) or 0)
 
-    if not m:
-        return None
+            dt = datetime(y, mo, d, h, mi, sec)
 
-    try:
-        year = int(m.group(1))
-        month = int(m.group(2))
-        day = int(m.group(3))
+            if 1900 <= dt.year <= datetime.now().year + 1:
+                return dt
 
-        hour = int(m.group(4)) if m.lastindex and m.lastindex >= 4 and m.group(4) else 0
-        minute = int(m.group(5)) if m.lastindex and m.lastindex >= 5 and m.group(5) else 0
-        second = int(m.group(6)) if m.lastindex and m.lastindex >= 6 and m.group(6) else 0
+        except Exception:
+            pass
 
-        now_year = datetime.now().year
+    # YYYYMMDD 또는 YYYYMMDD_HHMMSS
+    m = re.search(
+        r"(?<!\d)"
+        r"(19\d{2}|20\d{2})"
+        r"(0[1-9]|1[0-2])"
+        r"([0-2]\d|3[01])"
+        r"(?:[_\- ]?"
+        r"([0-2]\d)"
+        r"([0-5]\d)"
+        r"([0-5]\d))?"
+        r"(?!\d)",
+        s
+    )
 
-        if year < 1900 or year > now_year + 1:
-            return None
+    if m:
+        try:
+            return datetime(
+                int(m.group(1)),
+                int(m.group(2)),
+                int(m.group(3)),
+                int(m.group(4) or 0),
+                int(m.group(5) or 0),
+                int(m.group(6) or 0)
+            )
+        except Exception:
+            pass
 
-        return datetime(
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second
-        )
-
-    except Exception:
-        return None
+    return None
 
 
-# ----------------------------------------------------------
-# ExifTool JSON 메타데이터 읽기
-# ----------------------------------------------------------
+# ---------------------------------------------------------
+# ExifTool JSON
+# ---------------------------------------------------------
 
-def read_metadata(path):
+def read_exiftool(path):
     tool = exiftool_path()
 
     if not tool:
-        return {}
+        return {}, "ExifTool 없음"
 
+    flags = (
+        subprocess.CREATE_NO_WINDOW
+        if os.name == "nt"
+        else 0
+    )
+
+    # -G1: 그룹명 표시
+    # -a : 중복 태그 허용
+    # -s : 짧은 태그명
+    # -j : JSON
     args = [
         tool,
         "-j",
         "-G1",
         "-a",
         "-s",
-
-        "-DateTimeOriginal",
-        "-DateTimeDigitized",
-        "-CreateDate",
-        "-ModifyDate",
-        "-DateTime",
-
-        "-CreationDate",
-        "-MediaCreateDate",
-        "-TrackCreateDate",
-
-        "-Keys:CreationDate",
-        "-QuickTime:CreateDate",
-        "-QuickTime:CreationDate",
-        "-QuickTime:MediaCreateDate",
-        "-QuickTime:TrackCreateDate",
-
+        "-charset",
+        "filename=UTF8",
         str(path)
     ]
 
     try:
-        creationflags = (
-            subprocess.CREATE_NO_WINDOW
-            if os.name == "nt"
-            else 0
-        )
-
-        result = subprocess.run(
+        r = subprocess.run(
             args,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=30,
-            creationflags=creationflags
+            creationflags=flags
         )
 
-        if not result.stdout.strip():
-            return {}
+        if r.returncode != 0:
+            err = (
+                r.stderr.strip()
+                or r.stdout.strip()
+                or f"ExifTool 종료코드 {r.returncode}"
+            )
+            return {}, err
 
-        data = json.loads(result.stdout)
+        if not r.stdout.strip():
+            return {}, "ExifTool 출력 없음"
 
-        if isinstance(data, list) and data:
-            return data[0]
+        data = json.loads(r.stdout)
+
+        if not isinstance(data, list) or not data:
+            return {}, "ExifTool JSON 결과 없음"
+
+        return data[0], ""
+
+    except subprocess.TimeoutExpired:
+        return {}, "ExifTool 시간초과"
+
+    except Exception as e:
+        return {}, f"ExifTool 오류: {e}"
+
+
+def short_tag(key):
+    return str(key).split(":")[-1]
+
+
+def collect_date_tags(metadata):
+    result = []
+
+    for key, value in metadata.items():
+        tag = short_tag(key)
+
+        # 날짜로 보이는 태그만 진단 기록
+        if (
+            "date" in tag.lower()
+            or "time" in tag.lower()
+        ):
+            dt = parse_dt(value)
+
+            if dt:
+                result.append(
+                    (key, str(value), dt)
+                )
+
+    return result
+
+
+def find_priority_tag(metadata, priority):
+    date_tags = collect_date_tags(metadata)
+
+    for wanted in priority:
+        for key, raw, dt in date_tags:
+            if short_tag(key).lower() == wanted.lower():
+                return dt, key, raw
+
+    return None, "", ""
+
+
+# ---------------------------------------------------------
+# Pillow EXIF 보조
+# ---------------------------------------------------------
+
+def pillow_date(path):
+    if path.suffix.lower() not in IMAGE_EXT:
+        return None, ""
+
+    try:
+        from PIL import Image, ExifTags
+
+        with Image.open(path) as im:
+            exif = im.getexif()
+
+            if not exif:
+                return None, ""
+
+            found = []
+
+            for k, v in exif.items():
+                name = ExifTags.TAGS.get(k, str(k))
+
+                if name in (
+                    "DateTimeOriginal",
+                    "DateTimeDigitized",
+                    "DateTime"
+                ):
+                    dt = parse_dt(v)
+
+                    if dt:
+                        found.append((name, dt))
+
+            # 중요: nested ExifIFD
+            try:
+                sub = exif.get_ifd(0x8769)
+
+                for k, v in sub.items():
+                    name = ExifTags.TAGS.get(k, str(k))
+
+                    if name in (
+                        "DateTimeOriginal",
+                        "DateTimeDigitized",
+                        "DateTime"
+                    ):
+                        dt = parse_dt(v)
+
+                        if dt:
+                            found.append((name, dt))
+            except Exception:
+                pass
+
+            priority = {
+                "DateTimeOriginal": 0,
+                "DateTimeDigitized": 1,
+                "DateTime": 2
+            }
+
+            found.sort(
+                key=lambda x: priority.get(x[0], 99)
+            )
+
+            if found:
+                return found[0][1], found[0][0]
 
     except Exception:
         pass
 
-    return {}
+    return None, ""
 
 
-# ----------------------------------------------------------
-# 태그 검색
-# ----------------------------------------------------------
-
-def find_tag(metadata, names):
-    """
-    ExifTool -G1 사용 시
-    EXIF:DateTimeOriginal
-    QuickTime:CreateDate
-    Keys:CreationDate
-    등의 형태가 될 수 있으므로
-    그룹명과 관계없이 실제 태그 이름을 검사한다.
-    """
-
-    for wanted in names:
-
-        # 정확한 key 먼저
-        if wanted in metadata:
-            d = parse_dt(metadata[wanted])
-
-            if d:
-                return d, wanted
-
-        # 그룹명 포함 key 검사
-        for key, value in metadata.items():
-
-            short = key.split(":")[-1]
-
-            if short.lower() == wanted.lower():
-                d = parse_dt(value)
-
-                if d:
-                    return d, key
-
-    return None, None
-
-
-# ----------------------------------------------------------
-# 파일명 날짜 추출
-# ----------------------------------------------------------
+# ---------------------------------------------------------
+# 파일명 날짜
+# ---------------------------------------------------------
 
 def filename_date(path):
     name = path.stem
 
+    # 20240115 / 20240115_143025
+    # 2024-01-15 / 2024_01_15
     patterns = [
-
-        # IMG_20240115_143022
         re.compile(
             r"(?<!\d)"
             r"(19\d{2}|20\d{2})"
@@ -255,345 +379,143 @@ def filename_date(path):
             r"([0-5]\d)"
             r"[-_.:]?"
             r"([0-5]\d))?"
-        ),
-
-        # Screenshot_2024-01-15
-        re.compile(
-            r"(19\d{2}|20\d{2})"
-            r"[-_]"
-            r"(0[1-9]|1[0-2])"
-            r"[-_]"
-            r"([0-2]\d|3[01])"
         )
     ]
 
-    for pattern in patterns:
-        m = pattern.search(name)
+    for pat in patterns:
+        m = pat.search(name)
 
         if not m:
             continue
 
         try:
-            year = int(m.group(1))
-            month = int(m.group(2))
-            day = int(m.group(3))
-
-            hour = (
-                int(m.group(4))
-                if m.lastindex >= 4 and m.group(4)
-                else 0
-            )
-
-            minute = (
-                int(m.group(5))
-                if m.lastindex >= 5 and m.group(5)
-                else 0
-            )
-
-            second = (
-                int(m.group(6))
-                if m.lastindex >= 6 and m.group(6)
-                else 0
-            )
-
             return datetime(
-                year,
-                month,
-                day,
-                hour,
-                minute,
-                second
+                int(m.group(1)),
+                int(m.group(2)),
+                int(m.group(3)),
+                int(m.group(4) or 0),
+                int(m.group(5) or 0),
+                int(m.group(6) or 0)
             )
-
         except Exception:
             pass
 
     return None
 
 
-# ----------------------------------------------------------
-# Pillow EXIF 보조 판정
-# ----------------------------------------------------------
-
-def pillow_exif_date(path):
-    try:
-        from PIL import Image, ExifTags
-
-        with Image.open(path) as im:
-
-            exif = im.getexif()
-
-            if not exif:
-                return None, None
-
-            candidates = []
-
-            # 기본 IFD
-            for key, value in exif.items():
-
-                tag = ExifTags.TAGS.get(key, str(key))
-
-                if tag in (
-                    "DateTimeOriginal",
-                    "DateTimeDigitized",
-                    "DateTime"
-                ):
-                    candidates.append((tag, value))
-
-            # ExifIFD
-            try:
-                sub = exif.get_ifd(0x8769)
-
-                for key, value in sub.items():
-
-                    tag = ExifTags.TAGS.get(key, str(key))
-
-                    if tag in (
-                        "DateTimeOriginal",
-                        "DateTimeDigitized",
-                        "DateTime"
-                    ):
-                        candidates.append((tag, value))
-
-            except Exception:
-                pass
-
-            priority = {
-                "DateTimeOriginal": 0,
-                "DateTimeDigitized": 1,
-                "DateTime": 2
-            }
-
-            candidates.sort(
-                key=lambda x: priority.get(x[0], 99)
-            )
-
-            for tag, value in candidates:
-
-                dt = parse_dt(value)
-
-                if dt:
-                    return dt, tag
-
-    except Exception:
-        pass
-
-    return None, None
-
-
-# ----------------------------------------------------------
-# 촬영일 판정
-# ----------------------------------------------------------
+# ---------------------------------------------------------
+# 촬영일 최종 판정
+# ---------------------------------------------------------
 
 def determine_capture_date(path):
-
     ext = path.suffix.lower()
 
-    metadata = read_metadata(path)
+    metadata, exif_error = read_exiftool(path)
 
-    # ------------------------------------------------------
+    diagnostics = []
+
+    if metadata:
+        for key, raw, dt in collect_date_tags(metadata):
+            diagnostics.append(
+                f"{key}={raw}"
+            )
+
     # 사진
-    # ------------------------------------------------------
-
     if ext in IMAGE_EXT:
-
-        # 가장 신뢰도가 높은 실제 촬영일
-        dt, tag = find_tag(
+        dt, tag, raw = find_priority_tag(
             metadata,
-            [
-                "DateTimeOriginal",
-                "DateTimeDigitized"
-            ]
+            PHOTO_PRIORITY
         )
 
         if dt:
-            return (
-                dt,
-                "메타데이터:" + tag,
-                "확정",
-                ""
-            )
+            return {
+                "date": dt,
+                "method": f"ExifTool:{tag}",
+                "confidence": "확정",
+                "folder_ok": True,
+                "note": "",
+                "diagnostic": " | ".join(diagnostics),
+                "exif_error": exif_error
+            }
 
-        # HEIC/JPG 등 CreateDate
-        dt, tag = find_tag(
-            metadata,
-            [
-                "CreateDate"
-            ]
-        )
+        # ExifTool이 못 읽더라도 Pillow로 한 번 더
+        dt, tag = pillow_date(path)
 
         if dt:
-            return (
-                dt,
-                "메타데이터:" + tag,
-                "확정",
-                ""
-            )
+            return {
+                "date": dt,
+                "method": f"EXIF:{tag}",
+                "confidence": "확정",
+                "folder_ok": True,
+                "note": "Pillow EXIF 보조판독",
+                "diagnostic": " | ".join(diagnostics),
+                "exif_error": exif_error
+            }
 
-        # 일반 DateTime
-        dt, tag = find_tag(
-            metadata,
-            [
-                "DateTime"
-            ]
-        )
-
-        if dt:
-            return (
-                dt,
-                "메타데이터:" + tag,
-                "보조",
-                ""
-            )
-
-        # Pillow 보조 EXIF
-        dt, tag = pillow_exif_date(path)
-
-        if dt:
-            return (
-                dt,
-                "EXIF:" + tag,
-                "확정",
-                ""
-            )
-
-    # ------------------------------------------------------
     # 동영상
-    # ------------------------------------------------------
-
-    elif ext in VIDEO_EXT:
-
-        # iPhone MOV/MP4에서 현지 촬영시간을 포함할 가능성이 높은 태그
-        dt, tag = find_tag(
+    if ext in VIDEO_EXT:
+        dt, tag, raw = find_priority_tag(
             metadata,
-            [
-                "CreationDate"
-            ]
+            VIDEO_PRIORITY
         )
 
         if dt:
-            return (
-                dt,
-                "영상메타데이터:" + tag,
-                "확정",
-                ""
-            )
+            return {
+                "date": dt,
+                "method": f"ExifTool:{tag}",
+                "confidence": "확정",
+                "folder_ok": True,
+                "note": "",
+                "diagnostic": " | ".join(diagnostics),
+                "exif_error": exif_error
+            }
 
-        # QuickTime CreateDate
-        dt, tag = find_tag(
-            metadata,
-            [
-                "CreateDate"
-            ]
-        )
+    # 메타데이터에 실제 촬영일이 없으면 파일명 검사
+    fn = filename_date(path)
 
-        if dt:
-            return (
-                dt,
-                "영상메타데이터:" + tag,
-                "확정",
-                ""
-            )
+    if fn:
+        return {
+            "date": fn,
+            "method": "파일명 날짜",
+            "confidence": "보조",
+            "folder_ok": True,
+            "note": "촬영일 메타데이터 없음",
+            "diagnostic": " | ".join(diagnostics),
+            "exif_error": exif_error
+        }
 
-        # Media / Track
-        dt, tag = find_tag(
-            metadata,
-            [
-                "MediaCreateDate",
-                "TrackCreateDate"
-            ]
-        )
-
-        if dt:
-            return (
-                dt,
-                "영상메타데이터:" + tag,
-                "보조",
-                ""
-            )
-
-    # ------------------------------------------------------
-    # 파일명 날짜
-    # ------------------------------------------------------
-
-    fn_dt = filename_date(path)
-
-    if fn_dt:
-
-        return (
-            fn_dt,
-            "파일명 날짜",
-            "보조",
-            "메타데이터 촬영일 없음"
-        )
-
-    # ------------------------------------------------------
-    # 최후수단 : 파일 수정일
-    # ------------------------------------------------------
-
-    dt = datetime.fromtimestamp(
+    # 수정일은 CSV 참고용으로만 기록
+    modified = datetime.fromtimestamp(
         path.stat().st_mtime
     )
 
-    return (
-        dt,
-        "파일 수정일(최후수단)",
-        "확인필요",
-        "실제 촬영일 메타데이터 없음"
-    )
+    return {
+        "date": modified,
+        "method": "파일 수정일(참고용)",
+        "confidence": "확인필요",
+        "folder_ok": False,
+        "note": "실제 촬영일을 확정하지 못함",
+        "diagnostic": " | ".join(diagnostics),
+        "exif_error": exif_error
+    }
 
 
-# ----------------------------------------------------------
-# 메타데이터와 파일명 날짜 충돌 검사
-# ----------------------------------------------------------
-
-def check_date_conflict(path, capture_dt, method):
-    fn = filename_date(path)
-
-    if not fn:
-        return ""
-
-    if method.startswith("파일명"):
-        return ""
-
-    # 180일 이상 차이나면 검토 표시
-    try:
-        diff = abs((capture_dt.date() - fn.date()).days)
-
-        if diff >= 180:
-            return (
-                f"날짜 충돌: 메타데이터 "
-                f"{capture_dt:%Y-%m-%d} / "
-                f"파일명 {fn:%Y-%m-%d}"
-            )
-
-    except Exception:
-        pass
-
-    return ""
-
-
-# ----------------------------------------------------------
-# SHA256
-# ----------------------------------------------------------
+# ---------------------------------------------------------
+# 중복 검사
+# ---------------------------------------------------------
 
 def sha256(path):
     h = hashlib.sha256()
 
     with open(path, "rb") as f:
-
-        for block in iter(
+        for b in iter(
             lambda: f.read(4 * 1024 * 1024),
             b""
         ):
-            h.update(block)
+            h.update(b)
 
     return h.hexdigest()
 
-
-# ----------------------------------------------------------
-# 동일 이름 처리
-# ----------------------------------------------------------
 
 def unique_dest(folder, name):
     p = folder / name
@@ -607,7 +529,6 @@ def unique_dest(folder, name):
     i = 2
 
     while True:
-
         q = folder / f"{stem}_{i}{suffix}"
 
         if not q.exists():
@@ -619,7 +540,6 @@ def unique_dest(folder, name):
 def same_path(a, b):
     try:
         return os.path.samefile(a, b)
-
     except Exception:
         return (
             os.path.abspath(a).lower()
@@ -628,18 +548,16 @@ def same_path(a, b):
         )
 
 
-# ----------------------------------------------------------
+# ---------------------------------------------------------
 # GUI
-# ----------------------------------------------------------
+# ---------------------------------------------------------
 
 class App:
-
     def __init__(self, root):
-
         self.root = root
 
         root.title(APP)
-        root.geometry("800x570")
+        root.geometry("850x620")
 
         self.src = tk.StringVar()
         self.dst = tk.StringVar()
@@ -649,29 +567,18 @@ class App:
 
         self.q = queue.Queue()
 
-        frame = ttk.Frame(
-            root,
-            padding=14
-        )
-
-        frame.pack(
-            fill="both",
-            expand=True
-        )
+        f = ttk.Frame(root, padding=14)
+        f.pack(fill="both", expand=True)
 
         ttk.Label(
-            frame,
+            f,
             text="원본 폴더 (읽기만 함)"
-        ).grid(
-            row=0,
-            column=0,
-            sticky="w"
-        )
+        ).grid(row=0, column=0, sticky="w")
 
         ttk.Entry(
-            frame,
+            f,
             textvariable=self.src,
-            width=72
+            width=75
         ).grid(
             row=1,
             column=0,
@@ -680,16 +587,13 @@ class App:
         )
 
         ttk.Button(
-            frame,
+            f,
             text="찾아보기",
             command=lambda: self.pick(self.src)
-        ).grid(
-            row=1,
-            column=1
-        )
+        ).grid(row=1, column=1)
 
         ttk.Label(
-            frame,
+            f,
             text="정리본 저장 폴더"
         ).grid(
             row=2,
@@ -699,9 +603,9 @@ class App:
         )
 
         ttk.Entry(
-            frame,
+            f,
             textvariable=self.dst,
-            width=72
+            width=75
         ).grid(
             row=3,
             column=0,
@@ -710,16 +614,13 @@ class App:
         )
 
         ttk.Button(
-            frame,
+            f,
             text="찾아보기",
             command=lambda: self.pick(self.dst)
-        ).grid(
-            row=3,
-            column=1
-        )
+        ).grid(row=3, column=1)
 
         ttk.Checkbutton(
-            frame,
+            f,
             text="동영상도 정리 (MOV/MP4 등)",
             variable=self.videos
         ).grid(
@@ -730,7 +631,7 @@ class App:
         )
 
         ttk.Checkbutton(
-            frame,
+            f,
             text="완전 동일 중복파일도 중복검토 폴더에 복사",
             variable=self.dups
         ).grid(
@@ -740,25 +641,24 @@ class App:
         )
 
         ttk.Label(
-            frame,
+            f,
             text=(
-                "촬영일 우선순위: 사진 EXIF/HEIC 메타데이터 → "
-                "영상 QuickTime 메타데이터 → 파일명 → "
-                "파일 수정일(확인필요)"
+                "V2.2: 촬영 메타데이터 → 파일명 날짜 순으로 판정 / "
+                "촬영일을 확정할 수 없는 파일은 '촬영일_확인필요' 폴더로 분리"
             )
         ).grid(
             row=6,
             column=0,
             columnspan=2,
             sticky="w",
-            pady=(10, 4)
+            pady=(10, 2)
         )
 
         ttk.Label(
-            frame,
+            f,
             text=(
-                "※ 원본 파일은 삭제하거나 이동하지 않습니다. "
-                "정리본 폴더에 복사만 합니다."
+                "※ 파일 수정일은 연/월 분류에 사용하지 않습니다. "
+                "원본은 삭제·이동하지 않고 복사만 합니다."
             )
         ).grid(
             row=7,
@@ -768,7 +668,7 @@ class App:
         )
 
         self.pb = ttk.Progressbar(
-            frame,
+            f,
             mode="determinate"
         )
 
@@ -781,7 +681,7 @@ class App:
         )
 
         self.status = ttk.Label(
-            frame,
+            f,
             text="준비됨"
         )
 
@@ -793,8 +693,8 @@ class App:
         )
 
         self.log = tk.Text(
-            frame,
-            height=15,
+            f,
+            height=17,
             state="disabled"
         )
 
@@ -806,9 +706,9 @@ class App:
             pady=(8, 8)
         )
 
-        buttons = ttk.Frame(frame)
+        bf = ttk.Frame(f)
 
-        buttons.grid(
+        bf.grid(
             row=11,
             column=0,
             columnspan=2,
@@ -816,7 +716,7 @@ class App:
         )
 
         self.startb = ttk.Button(
-            buttons,
+            bf,
             text="정리 시작",
             command=self.start
         )
@@ -827,101 +727,85 @@ class App:
         )
 
         ttk.Button(
-            buttons,
+            bf,
             text="종료",
             command=root.destroy
-        ).pack(
-            side="left"
-        )
+        ).pack(side="left")
 
-        frame.columnconfigure(
-            0,
-            weight=1
-        )
+        f.columnconfigure(0, weight=1)
+        f.rowconfigure(10, weight=1)
 
-        frame.rowconfigure(
-            10,
-            weight=1
-        )
+        # 시작할 때 ExifTool 자체 점검
+        root.after(300, self.check_tool)
+        root.after(100, self.poll)
 
-        root.after(
-            100,
-            self.poll
-        )
+
+    def check_tool(self):
+        ok, path, info = exiftool_status()
+
+        if ok:
+            self.write(
+                f"ExifTool 정상 실행 / 버전 {info}"
+            )
+            self.write(
+                f"ExifTool 위치: {path}"
+            )
+        else:
+            self.write(
+                "경고: ExifTool 정상 실행 실패"
+            )
+            self.write(
+                f"내용: {info}"
+            )
 
 
     def pick(self, var):
-
         p = filedialog.askdirectory()
 
         if p:
             var.set(p)
 
 
-    def write(self, text):
-
-        self.log.configure(
-            state="normal"
-        )
-
-        self.log.insert(
-            "end",
-            text + "\n"
-        )
-
+    def write(self, s):
+        self.log.configure(state="normal")
+        self.log.insert("end", s + "\n")
         self.log.see("end")
-
-        self.log.configure(
-            state="disabled"
-        )
+        self.log.configure(state="disabled")
 
 
     def start(self):
+        s = Path(self.src.get())
+        d = Path(self.dst.get())
 
-        src = Path(
-            self.src.get()
-        )
-
-        dst = Path(
-            self.dst.get()
-        )
-
-        if not src.is_dir():
-
+        if not s.is_dir():
             return messagebox.showerror(
                 APP,
                 "원본 폴더를 선택하세요."
             )
 
         if not self.dst.get():
-
             return messagebox.showerror(
                 APP,
                 "정리본 저장 폴더를 선택하세요."
             )
 
-        dst.mkdir(
+        d.mkdir(
             parents=True,
             exist_ok=True
         )
 
         try:
-
             if (
-                same_path(src, dst)
-                or
-                str(dst.resolve()).lower().startswith(
-                    str(src.resolve()).lower()
-                    + os.sep
+                same_path(s, d)
+                or str(d.resolve()).lower().startswith(
+                    str(s.resolve()).lower() + os.sep
                 )
             ):
-
                 return messagebox.showerror(
                     APP,
                     "정리본 폴더는 원본 폴더 내부가 아닌 "
                     "별도 위치를 선택하세요."
                 )
-
         except Exception:
             pass
 
@@ -932,26 +816,24 @@ class App:
         self.pb["value"] = 0
 
         self.write(
-            "V2.1 촬영일 검사를 시작합니다..."
+            "V2.2 촬영일 정밀 검사를 시작합니다..."
         )
 
         threading.Thread(
             target=self.worker,
-            args=(src, dst),
+            args=(s, d),
             daemon=True
         ).start()
 
 
-    def worker(self, src, dst):
-
+    def worker(self, s, d):
         exts = set(IMAGE_EXT)
 
         if self.videos.get():
             exts |= VIDEO_EXT
 
         files = [
-            p
-            for p in src.rglob("*")
+            p for p in s.rglob("*")
             if p.is_file()
             and p.suffix.lower() in exts
         ]
@@ -962,95 +844,90 @@ class App:
         rows = []
 
         copied = 0
-        duplicate_count = 0
+        dupc = 0
         errors = 0
-        confirm_count = 0
-        conflict_count = 0
+        confirm = 0
+        metadata_ok = 0
+        filename_ok = 0
 
         self.q.put(
             ("max", max(total, 1))
         )
 
         self.q.put(
-            (
-                "log",
-                f"대상 파일: {total:,}개"
-            )
+            ("log", f"대상 파일: {total:,}개")
         )
 
-        for i, path in enumerate(
-            files,
-            1
-        ):
+        for i, p in enumerate(files, 1):
 
             try:
+                result = determine_capture_date(p)
 
-                dt, method, confidence, note = \
-                    determine_capture_date(path)
+                dt = result["date"]
+                method = result["method"]
+                confidence = result["confidence"]
+                folder_ok = result["folder_ok"]
+                note = result["note"]
+                diagnostic = result["diagnostic"]
+                exif_error = result["exif_error"]
 
-                conflict = check_date_conflict(
-                    path,
-                    dt,
-                    method
-                )
+                if method.startswith("ExifTool") or method.startswith("EXIF"):
+                    metadata_ok += 1
 
-                if conflict:
-
-                    conflict_count += 1
-
-                    if note:
-                        note += " / " + conflict
-                    else:
-                        note = conflict
+                elif method == "파일명 날짜":
+                    filename_ok += 1
 
                 if confidence == "확인필요":
-                    confirm_count += 1
+                    confirm += 1
 
-                file_hash = sha256(path)
+                h = sha256(p)
+                duplicate = h in seen
 
-                duplicate = (
-                    file_hash in seen
-                )
-
-                if (
-                    duplicate
-                    and
-                    not self.dups.get()
-                ):
+                if duplicate and not self.dups.get():
 
                     rows.append([
-                        path.name,
-                        dt.strftime(
-                            "%Y-%m-%d %H:%M:%S"
-                        ),
+                        p.name,
+                        dt.strftime("%Y-%m-%d %H:%M:%S"),
                         method,
                         confidence,
-                        str(path),
+                        str(p),
                         "",
                         "중복-건너뜀",
-                        seen[file_hash],
-                        note
+                        seen[h],
+                        note,
+                        exif_error,
+                        diagnostic
                     ])
 
-                    duplicate_count += 1
+                    dupc += 1
 
                 else:
-
-                    if duplicate:
-
+                    if folder_ok:
                         base = (
-                            dst
-                            / "중복검토"
+                            d
                             / f"{dt.year:04d}"
                             / f"{dt.month:02d}"
                         )
-
                     else:
-
                         base = (
-                            dst
-                            / f"{dt.year:04d}"
-                            / f"{dt.month:02d}"
+                            d
+                            / "촬영일_확인필요"
+                        )
+
+                    if duplicate:
+                        base = (
+                            d
+                            / "중복검토"
+                            / (
+                                f"{dt.year:04d}"
+                                if folder_ok
+                                else "촬영일_확인필요"
+                            )
+                            / (
+                                f"{dt.month:02d}"
+                                if folder_ok
+                                else ""
+                            )
                         )
 
                     base.mkdir(
@@ -1060,32 +937,28 @@ class App:
 
                     out = unique_dest(
                         base,
-                        path.name
+                        p.name
                     )
 
                     shutil.copy2(
-                        path,
+                        p,
                         out
                     )
 
                     if (
-                        path.stat().st_size
-                        !=
-                        out.stat().st_size
+                        p.stat().st_size
+                        != out.stat().st_size
                     ):
-
                         raise IOError(
                             "복사 후 파일 크기 불일치"
                         )
 
                     rows.append([
-                        path.name,
-                        dt.strftime(
-                            "%Y-%m-%d %H:%M:%S"
-                        ),
+                        p.name,
+                        dt.strftime("%Y-%m-%d %H:%M:%S"),
                         method,
                         confidence,
-                        str(path),
+                        str(p),
                         str(out),
                         (
                             "중복-복사"
@@ -1093,56 +966,48 @@ class App:
                             else "정상"
                         ),
                         "",
-                        note
+                        note,
+                        exif_error,
+                        diagnostic
                     ])
 
                     copied += 1
 
                     if duplicate:
-                        duplicate_count += 1
+                        dupc += 1
 
                 seen.setdefault(
-                    file_hash,
-                    str(path)
+                    h,
+                    str(p)
                 )
 
             except Exception as e:
-
                 errors += 1
 
                 rows.append([
-                    path.name,
+                    p.name,
                     "",
                     "오류",
                     "",
-                    str(path),
+                    str(p),
                     "",
                     "오류",
                     "",
-                    str(e)
+                    str(e),
+                    "",
+                    ""
                 ])
 
-            if (
-                i % 10 == 0
-                or
-                i == total
-            ):
-
+            if i % 10 == 0 or i == total:
                 self.q.put(
                     (
                         "progress",
                         i,
-                        (
-                            f"{i:,}/{total:,} 처리 중 — "
-                            f"{path.name}"
-                        )
+                        f"{i:,}/{total:,} 처리 중 — {p.name}"
                     )
                 )
 
-        report = (
-            dst
-            / "사진정리_결과.csv"
-        )
+        report = d / "사진정리_결과_V2.2.csv"
 
         with open(
             report,
@@ -1151,80 +1016,69 @@ class App:
             encoding="utf-8-sig"
         ) as f:
 
-            writer = csv.writer(f)
+            w = csv.writer(f)
 
-            writer.writerow([
+            w.writerow([
                 "파일명",
-                "촬영일",
+                "판정날짜",
                 "날짜판정방식",
                 "신뢰도",
                 "원본경로",
                 "정리경로",
                 "중복여부/결과",
                 "중복원본",
-                "비고"
+                "비고",
+                "ExifTool오류",
+                "메타데이터진단"
             ])
 
-            writer.writerows(rows)
+            w.writerows(rows)
 
-        result = (
-            f"완료\n\n"
+        result_text = (
+            f"V2.2 완료\n\n"
+            f"전체 대상: {total:,}개\n"
             f"복사: {copied:,}개\n"
-            f"중복: {duplicate_count:,}개\n"
-            f"확인필요: {confirm_count:,}개\n"
-            f"날짜충돌: {conflict_count:,}개\n"
+            f"메타데이터 촬영일: {metadata_ok:,}개\n"
+            f"파일명 날짜: {filename_ok:,}개\n"
+            f"촬영일 확인필요: {confirm:,}개\n"
+            f"중복: {dupc:,}개\n"
             f"오류: {errors:,}개\n\n"
             f"결과표:\n{report}"
         )
 
         self.q.put(
-            ("done", result)
+            ("done", result_text)
         )
 
 
     def poll(self):
-
         try:
-
             while True:
+                x = self.q.get_nowait()
 
-                item = self.q.get_nowait()
+                if x[0] == "max":
+                    self.pb["maximum"] = x[1]
 
-                if item[0] == "max":
-
-                    self.pb["maximum"] = item[1]
-
-                elif item[0] == "progress":
-
-                    self.pb["value"] = item[1]
-
+                elif x[0] == "progress":
+                    self.pb["value"] = x[1]
                     self.status.config(
-                        text=item[2]
+                        text=x[2]
                     )
 
-                elif item[0] == "log":
+                elif x[0] == "log":
+                    self.write(x[1])
 
-                    self.write(
-                        item[1]
-                    )
-
-                elif item[0] == "done":
-
-                    self.write(
-                        item[1]
-                    )
-
+                elif x[0] == "done":
+                    self.write(x[1])
                     self.status.config(
                         text="완료"
                     )
-
                     self.startb.config(
                         state="normal"
                     )
-
                     messagebox.showinfo(
                         APP,
-                        item[1]
+                        x[1]
                     )
 
         except queue.Empty:
@@ -1237,9 +1091,6 @@ class App:
 
 
 if __name__ == "__main__":
-
     root = tk.Tk()
-
     App(root)
-
     root.mainloop()
