@@ -56,25 +56,12 @@ jobs:
       - name: Build EXE
         shell: powershell
         run: |
-          $args = @(
-            "--noconfirm",
-            "--clean",
-            "--onefile",
-            "--windowed",
-            "--name", "사진관리_V2",
-            "--add-binary", "exiftool.exe;."
-          )
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name PhotoOrganizerV2 --add-binary "exiftool.exe;." photo_organizer_v2.py
 
           if (Test-Path ".\exiftool_files") {
-            $args += @(
-              "--add-data",
-              "exiftool_files;exiftool_files"
-            )
+            Remove-Item -Recurse -Force ".\dist\PhotoOrganizerV2" -ErrorAction SilentlyContinue
+            Write-Host "ExifTool support files detected."
           }
-
-          $args += "photo_organizer_v2.py"
-
-          python -m PyInstaller @args
 
       - name: Verify EXE
         shell: powershell
