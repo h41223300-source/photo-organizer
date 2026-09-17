@@ -1,0 +1,104 @@
+name: Build Photo Organizer ULTIMATE R3
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m pip install --upgrade pip
+          pip install -r requirements_ultimate.txt
+
+      - name: Install FFmpeg and copy REAL FFprobe
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "Installing FFmpeg..."
+          choco install ffmpeg -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "Chocolatey FFmpeg installation failed." }
+
+          # IMPORTANT: Do not use C:\ProgramData\chocolatey\bin\ffprobe.exe.
+          # That file is a Chocolatey shim and may point to a path that is not portable.
+          $searchRoots = @(
+            "C:\ProgramData\chocolatey\lib\ffmpeg\tools",
+            "C:\tools",
+            "C:\ffmpeg"
+          )
+
+          $candidates = @()
+          foreach ($root in $searchRoots) {
+            if (Test-Path $root) {
+              $candidates += Get-ChildItem $root -Recurse -File -Filter "ffprobe.exe" -ErrorAction SilentlyContinue
+            }
+          }
+
+          # Prefer the actual executable in an ffmpeg/bin directory and ignore Chocolatey bin shims.
+          $probe = $candidates |
+            Where-Object { $_.FullName -notlike "C:\ProgramData\chocolatey\bin\*" } |
+            Sort-Object @{Expression={ if ($_.DirectoryName -match '[\\/]ffmpeg[\\/]bin$') {0} else {1} }}, @{Expression='Length';Descending=$true} |
+            Select-Object -First 1
+
+          if (-not $probe) {
+            Write-Host "FFprobe search results:"
+            $candidates | ForEach-Object { Write-Host $_.FullName }
+            throw "Real ffprobe.exe was not found."
+          }
+
+          Write-Host "REAL FFprobe found: $($probe.FullName)"
+          Write-Host "Size: $($probe.Length) bytes"
+          if ($probe.Length -lt 500000) {
+            throw "Located ffprobe.exe is unexpectedly small and may be a shim."
+          }
+
+          Copy-Item -LiteralPath $probe.FullName -Destination ".\ffprobe.exe" -Force
+          if (-not (Test-Path ".\ffprobe.exe")) { throw "Failed to copy real ffprobe.exe." }
+
+          Write-Host "Verifying copied FFprobe..."
+          & ".\ffprobe.exe" -version
+          if ($LASTEXITCODE -ne 0) { throw "Copied ffprobe.exe verification failed." }
+
+      - name: Build EXE
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m PyInstaller --noconfirm --clean --onefile --windowed `
+            --name PhotoOrganizer_ULTIMATE_R3 `
+            --add-binary "ffprobe.exe;." `
+            --collect-all pillow_heif `
+            photo_organizer_ultimate.py
+          if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed." }
+
+      - name: Verify EXE
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = "dist\PhotoOrganizer_ULTIMATE_R3.exe"
+          if (-not (Test-Path $exe)) { throw "PhotoOrganizer_ULTIMATE_R3.exe was not created." }
+          $item = Get-Item $exe
+          if ($item.Length -lt 10000000) { throw "Built EXE is unexpectedly small." }
+          Write-Host "Build verified: $($item.FullName)"
+          Write-Host ("Size: {0:N0} bytes" -f $item.Length)
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhotoOrganizer-ULTIMATE-R3-Windows-EXE
+          path: dist/PhotoOrganizer_ULTIMATE_R3.exe
+          if-no-files-found: error
+          retention-days: 14
