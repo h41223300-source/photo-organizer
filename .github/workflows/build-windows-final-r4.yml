@@ -1,0 +1,122 @@
+name: Build Photo Organizer FINAL R4
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m pip install --upgrade pip
+          pip install -r requirements_final_r4.txt
+
+      - name: Install FFmpeg
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          for ($i=1; $i -le 3; $i++) {
+            Write-Host "FFmpeg install attempt $i/3"
+            choco install ffmpeg -y --no-progress
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($i -eq 3) { throw "FFmpeg installation failed after 3 attempts." }
+            Start-Sleep -Seconds (10 * $i)
+          }
+
+      - name: Locate REAL ffprobe binary
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # IMPORTANT: Never bundle Chocolatey's small shim in ...\Chocolatey\bin.
+          $roots = @(
+            "C:\ProgramData\chocolatey\lib\ffmpeg",
+            "C:\ProgramData\chocolatey\lib"
+          )
+
+          $all = @()
+          foreach ($root in $roots) {
+            if (Test-Path $root) {
+              $all += Get-ChildItem $root -Recurse -File -Filter "ffprobe.exe" -ErrorAction SilentlyContinue
+            }
+          }
+
+          # Real ffprobe is large. Reject shims/wrappers.
+          $probe = $all |
+            Where-Object {
+              $_.Length -gt 1000000 -and
+              $_.FullName -notmatch '\\chocolatey\\bin\\'
+            } |
+            Sort-Object Length -Descending |
+            Select-Object -First 1
+
+          if (-not $probe) {
+            Write-Host "Candidates found:"
+            $all | Select-Object FullName, Length | Format-Table -AutoSize
+            throw "A real ffprobe.exe binary was not found."
+          }
+
+          Write-Host "REAL ffprobe:"
+          Write-Host $probe.FullName
+          Write-Host ("Size: {0:N0} bytes" -f $probe.Length)
+
+          Copy-Item $probe.FullName ".\ffprobe.exe" -Force
+          $local = Get-Item ".\ffprobe.exe"
+          if ($local.Length -le 1000000) {
+            throw "Copied ffprobe.exe looks like a shim, not the real binary."
+          }
+
+          & ".\ffprobe.exe" -version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Real ffprobe verification failed."
+          }
+
+      - name: Syntax check
+        shell: powershell
+        run: |
+          python -m py_compile photo_organizer_final_r4.py
+
+      - name: Build FINAL EXE
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m PyInstaller --noconfirm --clean --onefile --windowed `
+            --name PhotoOrganizer_FINAL_R4 `
+            --add-binary "ffprobe.exe;." `
+            --collect-all pillow_heif `
+            photo_organizer_final_r4.py
+
+          if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed." }
+
+      - name: Verify FINAL EXE
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = "dist\PhotoOrganizer_FINAL_R4.exe"
+          if (-not (Test-Path $exe)) { throw "FINAL EXE was not created." }
+          $item = Get-Item $exe
+          if ($item.Length -lt 5000000) {
+            throw "FINAL EXE is unexpectedly small."
+          }
+          Write-Host ("FINAL EXE OK: {0} ({1:N0} bytes)" -f $item.FullName, $item.Length)
+
+      - name: Upload FINAL EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhotoOrganizer-FINAL-R4-Windows-EXE
+          path: dist/PhotoOrganizer_FINAL_R4.exe
+          if-no-files-found: error
+          retention-days: 14
