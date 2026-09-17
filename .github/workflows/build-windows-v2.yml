@@ -14,9 +14,18 @@ jobs:
       - name: Download ExifTool
         shell: powershell
         run: |
-          Invoke-WebRequest -Uri "https://exiftool.org/exiftool-13.36_64.zip" -OutFile exiftool.zip
+          $page = Invoke-WebRequest -Uri "https://exiftool.org/"
+          $match = [regex]::Match($page.Content, 'href="([^"]*exiftool-[0-9.]+_64\.zip)"')
+          if (-not $match.Success) { throw "ExifTool Windows ZIP download link not found." }
+          $url = $match.Groups[1].Value
+          if ($url -notmatch '^https?://') {
+            $url = "https://exiftool.org/" + $url.TrimStart('/')
+          }
+          Write-Host "Downloading ExifTool from $url"
+          Invoke-WebRequest -Uri $url -OutFile exiftool.zip
           Expand-Archive exiftool.zip -DestinationPath exiftool_tmp
           $exe = Get-ChildItem -Path exiftool_tmp -Recurse -Filter "exiftool(-k).exe" | Select-Object -First 1
+          if (-not $exe) { throw "exiftool(-k).exe not found." }
           Copy-Item $exe.FullName "exiftool.exe"
           $lib = Get-ChildItem -Path exiftool_tmp -Recurse -Directory -Filter "exiftool_files" | Select-Object -First 1
           if ($lib) { Copy-Item $lib.FullName "exiftool_files" -Recurse }
