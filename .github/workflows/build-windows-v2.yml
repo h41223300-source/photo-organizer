@@ -27,36 +27,22 @@ jobs:
         run: |
           choco install exiftool -y
 
-          $cmd = Get-Command exiftool.exe -ErrorAction SilentlyContinue
+          $root = "C:\ProgramData\chocolatey\lib\exiftool\tools"
 
-          if ($cmd) {
-            $source = $cmd.Source
-          }
-          else {
-            $source = Get-ChildItem "C:\ProgramData\chocolatey" -Recurse -File -ErrorAction SilentlyContinue |
-              Where-Object {
-                $_.Name -eq "exiftool.exe" -or
-                $_.Name -eq "exiftool(-k).exe"
-              } |
-              Select-Object -First 1 |
-              ForEach-Object { $_.FullName }
-          }
+          $exe = Get-ChildItem $root -Recurse -File -ErrorAction Stop |
+            Where-Object { $_.Name -eq "exiftool.exe" -or $_.Name -eq "exiftool(-k).exe" } |
+            Select-Object -First 1
 
-          if (-not $source) {
+          if (-not $exe) {
             throw "ExifTool executable not found."
           }
 
-          Write-Host "ExifTool source:"
-          Write-Host $source
+          Write-Host "ExifTool found:"
+          Write-Host $exe.FullName
 
-          Copy-Item $source ".\exiftool.exe" -Force
+          Copy-Item $exe.FullName ".\exiftool.exe" -Force
 
-          Write-Host "Testing copied ExifTool..."
           & ".\exiftool.exe" -ver
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "Copied ExifTool failed to execute."
-          }
 
       - name: Build EXE
         shell: powershell
