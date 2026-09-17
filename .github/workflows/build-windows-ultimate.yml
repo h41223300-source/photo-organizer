@@ -1,0 +1,51 @@
+name: Build Photo Organizer ULTIMATE
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements_ultimate.txt
+
+      - name: Download FFprobe
+        shell: powershell
+        run: |
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile "ffmpeg.zip"
+          Expand-Archive "ffmpeg.zip" -DestinationPath "ffmpeg_tmp" -Force
+          $probe = Get-ChildItem ".\ffmpeg_tmp" -Recurse -Filter "ffprobe.exe" | Select-Object -First 1
+          if (-not $probe) { throw "ffprobe.exe not found" }
+          Copy-Item $probe.FullName ".\ffprobe.exe" -Force
+          & ".\ffprobe.exe" -version
+
+      - name: Build EXE
+        shell: powershell
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name PhotoOrganizer_ULTIMATE --add-binary "ffprobe.exe;." photo_organizer_ultimate.py
+
+      - name: Verify EXE
+        shell: powershell
+        run: |
+          if (-not (Test-Path "dist\PhotoOrganizer_ULTIMATE.exe")) { throw "EXE was not created." }
+          Get-Item "dist\PhotoOrganizer_ULTIMATE.exe"
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhotoOrganizer-ULTIMATE-Windows-EXE
+          path: dist/PhotoOrganizer_ULTIMATE.exe
+          if-no-files-found: error
