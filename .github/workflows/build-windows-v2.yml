@@ -66,16 +66,15 @@ jobs:
       - name: Verify EXE
         shell: powershell
         run: |
-          if (-not (Test-Path "dist\사진관리_V2.exe")) {
-            throw "사진관리_V2.exe was not created."
+          if (-not (Test-Path "dist\PhotoOrganizerV2.exe")) {
+            throw "PhotoOrganizerV2.exe was not created."
           }
-
-          Write-Host "Build successful."
-          Get-Item "dist\사진관리_V2.exe"
+          Write-Host "PhotoOrganizerV2.exe build verified."
+          Get-Item "dist\PhotoOrganizerV2.exe"
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
-          name: 사진관리-V2-Windows-EXE
-          path: dist/사진관리_V2.exe
+          name: PhotoOrganizerV2-Windows-EXE
+          path: dist/PhotoOrganizerV2.exe
           if-no-files-found: error
