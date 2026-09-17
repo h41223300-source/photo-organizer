@@ -27,41 +27,49 @@ jobs:
         run: |
           choco install exiftool -y
 
-          $root = "C:\ProgramData\chocolatey\lib\exiftool\tools"
+          $cmd = Get-Command exiftool.exe -ErrorAction SilentlyContinue
 
-          $exe = Get-ChildItem $root -Recurse -File -ErrorAction Stop |
-            Where-Object { $_.Name -eq "exiftool.exe" -or $_.Name -eq "exiftool(-k).exe" } |
-            Select-Object -First 1
+          if ($cmd) {
+            $source = $cmd.Source
+          }
+          else {
+            $source = Get-ChildItem "C:\ProgramData\chocolatey" -Recurse -File -ErrorAction SilentlyContinue |
+              Where-Object {
+                $_.Name -eq "exiftool.exe" -or
+                $_.Name -eq "exiftool(-k).exe"
+              } |
+              Select-Object -First 1 |
+              ForEach-Object { $_.FullName }
+          }
 
-          if (-not $exe) {
+          if (-not $source) {
             throw "ExifTool executable not found."
           }
 
-          Write-Host "ExifTool found at:"
-          Write-Host $exe.FullName
+          Write-Host "ExifTool source:"
+          Write-Host $source
 
-          Copy-Item $exe.FullName ".\exiftool.exe" -Force
+          Copy-Item $source ".\exiftool.exe" -Force
 
-          $files = Get-ChildItem $root -Recurse -Directory -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -eq "exiftool_files" } |
-            Select-Object -First 1
-
-          if ($files) {
-            Copy-Item $files.FullName ".\exiftool_files" -Recurse -Force
-            Write-Host "exiftool_files copied."
-          }
-
+          Write-Host "Testing copied ExifTool..."
           & ".\exiftool.exe" -ver
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Copied ExifTool failed to execute."
+          }
 
       - name: Build EXE
         shell: powershell
         run: |
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --name PhotoOrganizerV2 --add-binary "exiftool.exe;." photo_organizer_v2.py
-
-          if (Test-Path ".\exiftool_files") {
-            Remove-Item -Recurse -Force ".\dist\PhotoOrganizerV2" -ErrorAction SilentlyContinue
-            Write-Host "ExifTool support files detected."
-          }
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --windowed `
+            --name PhotoOrganizerV2 `
+            --add-binary "exiftool.exe;." `
+            --collect-all PIL `
+            photo_organizer_v2.py
 
       - name: Verify EXE
         shell: powershell
@@ -69,12 +77,13 @@ jobs:
           if (-not (Test-Path "dist\PhotoOrganizerV2.exe")) {
             throw "PhotoOrganizerV2.exe was not created."
           }
+
           Write-Host "PhotoOrganizerV2.exe build verified."
           Get-Item "dist\PhotoOrganizerV2.exe"
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
-          name: PhotoOrganizerV2-Windows-EXE
+          name: PhotoOrganizerV2-2-Windows-EXE
           path: dist/PhotoOrganizerV2.exe
           if-no-files-found: error
