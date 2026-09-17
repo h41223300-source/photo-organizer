@@ -1,0 +1,109 @@
+name: Build Photo Organizer ULTIMATE R2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements_ultimate.txt
+
+      - name: Install FFmpeg and locate FFprobe
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # GitHub's Windows runner normally has Chocolatey.
+          # Retry to reduce transient package/network failures.
+          $installed = $false
+          for ($i = 1; $i -le 3; $i++) {
+            try {
+              Write-Host "FFmpeg install attempt $i of 3"
+              choco install ffmpeg -y --no-progress
+              if ($LASTEXITCODE -eq 0) {
+                $installed = $true
+                break
+              }
+            } catch {
+              Write-Warning $_
+            }
+            Start-Sleep -Seconds (10 * $i)
+          }
+
+          # First try PATH, then Chocolatey folders.
+          $cmd = Get-Command ffprobe.exe -ErrorAction SilentlyContinue
+          if ($cmd) {
+            $probePath = $cmd.Source
+          } else {
+            $probe = Get-ChildItem "C:\ProgramData\chocolatey" -Recurse -File -Filter "ffprobe.exe" -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+            if ($probe) { $probePath = $probe.FullName }
+          }
+
+          if (-not $probePath) {
+            throw "ffprobe.exe not found after FFmpeg installation."
+          }
+
+          Write-Host "FFprobe found: $probePath"
+          Copy-Item $probePath ".\ffprobe.exe" -Force
+
+          if (-not (Test-Path ".\ffprobe.exe")) {
+            throw "Failed to copy ffprobe.exe into repository workspace."
+          }
+
+          & ".\ffprobe.exe" -version
+          if ($LASTEXITCODE -ne 0) {
+            throw "ffprobe.exe verification failed."
+          }
+
+      - name: Build EXE
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m PyInstaller --noconfirm --clean --onefile --windowed `
+            --name PhotoOrganizer_ULTIMATE_R2 `
+            --add-binary "ffprobe.exe;." `
+            --collect-all pillow_heif `
+            photo_organizer_ultimate.py
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "PyInstaller build failed."
+          }
+
+      - name: Verify EXE
+        shell: powershell
+        run: |
+          $exe = "dist\PhotoOrganizer_ULTIMATE_R2.exe"
+          if (-not (Test-Path $exe)) {
+            throw "PhotoOrganizer_ULTIMATE_R2.exe was not created."
+          }
+          $item = Get-Item $exe
+          if ($item.Length -lt 1000000) {
+            throw "Built EXE is unexpectedly small."
+          }
+          Write-Host "Build verified:"
+          Write-Host $item.FullName
+          Write-Host ("Size: {0:N0} bytes" -f $item.Length)
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhotoOrganizer-ULTIMATE-R2-Windows-EXE
+          path: dist/PhotoOrganizer_ULTIMATE_R2.exe
+          if-no-files-found: error
+          retention-days: 14
