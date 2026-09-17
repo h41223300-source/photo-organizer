@@ -1,42 +1,43 @@
 name: Build Photo Organizer V2
+
 on:
   workflow_dispatch:
+
 jobs:
   build:
     runs-on: windows-latest
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
       - name: Install dependencies
         run: python -m pip install --upgrade pip && pip install -r requirements_v2.txt
-      - name: Download ExifTool
+
+      - name: Install ExifTool
         shell: powershell
         run: |
-          $page = Invoke-WebRequest -Uri "https://exiftool.org/"
-          $match = [regex]::Match($page.Content, 'href="([^"]*exiftool-[0-9.]+_64\.zip)"')
-          if (-not $match.Success) { throw "ExifTool Windows ZIP download link not found." }
-          $url = $match.Groups[1].Value
-          if ($url -notmatch '^https?://') {
-            $url = "https://exiftool.org/" + $url.TrimStart('/')
+          choco install exiftool -y
+          $exe = Get-Command exiftool.exe -ErrorAction SilentlyContinue
+          if (-not $exe) {
+            $exe = Get-ChildItem "C:\ProgramData\chocolatey" -Recurse -Filter "exiftool.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           }
-          Write-Host "Downloading ExifTool from $url"
-          Invoke-WebRequest -Uri $url -OutFile exiftool.zip
-          Expand-Archive exiftool.zip -DestinationPath exiftool_tmp
-          $exe = Get-ChildItem -Path exiftool_tmp -Recurse -Filter "exiftool(-k).exe" | Select-Object -First 1
-          if (-not $exe) { throw "exiftool(-k).exe not found." }
-          Copy-Item $exe.FullName "exiftool.exe"
-          $lib = Get-ChildItem -Path exiftool_tmp -Recurse -Directory -Filter "exiftool_files" | Select-Object -First 1
-          if ($lib) { Copy-Item $lib.FullName "exiftool_files" -Recurse }
+          if (-not $exe) {
+            throw "ExifTool installation failed"
+          }
+          Copy-Item $exe.Source "exiftool.exe" -Force
+          & ".\exiftool.exe" -ver
+
       - name: Build EXE
         shell: powershell
         run: |
-          $args = @('--noconfirm','--clean','--onefile','--windowed','--name','사진관리_V2','--add-binary','exiftool.exe;.')
-          if (Test-Path 'exiftool_files') { $args += @('--add-data','exiftool_files;exiftool_files') }
-          $args += 'photo_organizer_v2.py'
-          pyinstaller @args
-      - uses: actions/upload-artifact@v4
+          pyinstaller --noconfirm --clean --onefile --windowed --name "사진관리_V2" --add-binary "exiftool.exe;." photo_organizer_v2.py
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
         with:
           name: 사진관리-V2-Windows-EXE
           path: dist/사진관리_V2.exe
