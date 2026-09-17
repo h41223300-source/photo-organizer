@@ -1,0 +1,42 @@
+name: Build Photo Organizer FINAL
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements_final.txt
+
+      - name: Build EXE
+        shell: powershell
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name PhotoOrganizer_FINAL --collect-all pillow_heif --collect-all mutagen photo_organizer_final.py
+
+      - name: Verify EXE
+        shell: powershell
+        run: |
+          if (-not (Test-Path "dist\PhotoOrganizer_FINAL.exe")) {
+            throw "PhotoOrganizer_FINAL.exe was not created."
+          }
+          Get-Item "dist\PhotoOrganizer_FINAL.exe"
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhotoOrganizer-FINAL-Windows-EXE
+          path: dist/PhotoOrganizer_FINAL.exe
+          if-no-files-found: error
