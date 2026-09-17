@@ -1,0 +1,43 @@
+name: Build Photo Organizer V3
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements_v3.txt
+
+      - name: Build EXE
+        shell: powershell
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name PhotoOrganizerV3 --collect-all pillow_heif --collect-all mutagen --collect-all pymediainfo photo_organizer_v3.py
+
+      - name: Verify EXE
+        shell: powershell
+        run: |
+          if (-not (Test-Path "dist\PhotoOrganizerV3.exe")) {
+            throw "PhotoOrganizerV3.exe was not created."
+          }
+          Get-Item "dist\PhotoOrganizerV3.exe"
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhotoOrganizerV3-Windows-EXE
+          path: dist/PhotoOrganizerV3.exe
+          if-no-files-found: error
