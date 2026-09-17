@@ -42,20 +42,22 @@ jobs:
 
           Copy-Item $exe.FullName ".\exiftool.exe" -Force
 
+          $support = Join-Path $exe.DirectoryName "exiftool_files"
+
+          if (-not (Test-Path $support)) {
+            throw "exiftool_files folder not found: $support"
+          }
+
+          Copy-Item $support ".\exiftool_files" -Recurse -Force
+
+          Write-Host "ExifTool support files copied."
+
           & ".\exiftool.exe" -ver
 
       - name: Build EXE
         shell: powershell
         run: |
-          python -m PyInstaller `
-            --noconfirm `
-            --clean `
-            --onefile `
-            --windowed `
-            --name PhotoOrganizerV2 `
-            --add-binary "exiftool.exe;." `
-            --collect-all PIL `
-            photo_organizer_v2.py
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name PhotoOrganizerV2 --add-binary "exiftool.exe;." --add-data "exiftool_files;exiftool_files" photo_organizer_v2.py
 
       - name: Verify EXE
         shell: powershell
